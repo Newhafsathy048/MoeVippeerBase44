@@ -1,0 +1,17 @@
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "node src/index.js"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5
+
+# Persistent volume — mounts at /data inside the container.
+# WhatsApp sessions (auth_info/) and store.json live here.
+# Without this, Railway wipes everything on every redeploy and bot
+# loses its WhatsApp session, requiring a new QR/pairing code each time.
+[[volumes]]
+mountPath = "/data"
