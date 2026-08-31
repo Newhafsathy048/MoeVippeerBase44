@@ -1,0 +1,105 @@
+openapi: 3.0.3
+info:
+  title: MoE Bot Control API
+  version: 1.0.0
+  description: API for a hosted WhatsApp multi-connection bot and its dashboard frontend.
+servers:
+  - url: https://YOUR-MOE-BACKEND.example.com
+paths:
+  /api/health:
+    get:
+      operationId: getHealth
+      responses:
+        '200':
+          description: Service health
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/status:
+    get:
+      operationId: getStatus
+      responses:
+        '200':
+          description: Dashboard snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+  /api/connections:
+    get:
+      operationId: listConnections
+      responses:
+        '200':
+          description: Authorized connections
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { type: object }
+    post:
+      operationId: createConnection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, phone]
+              properties:
+                name: { type: string }
+                phone: { type: string }
+                replyMode: { type: string, enum: [command, all, off] }
+                replyText: { type: string }
+      responses:
+        '201': { description: Connection created }
+  /api/connections/{id}/connect:
+    post:
+      operationId: connectConnection
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Connection status }
+  /api/connections/{id}/disconnect:
+    post:
+      operationId: disconnectConnection
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Connection status }
+  /api/connections/{id}/history:
+    get:
+      operationId: getConnectionHistory
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Messages and health logs for one connection }
+        '404': { description: Connection not found }
+  /api/notification-preferences:
+    get:
+      operationId: getNotificationPreferences
+      responses:
+        '200': { description: Notification preferences }
+    patch:
+      operationId: updateNotificationPreferences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                connectionDrop: { type: boolean }
+                replyFailure: { type: boolean }
+                criticalError: { type: boolean }
+      responses:
+        '200': { description: Preferences saved }
+        '400': { description: Invalid preference values }
+components:
+  securitySchemes:
+    dashboardPassword:
+      type: http
+      scheme: bearer
+security:
+  - dashboardPassword: []
