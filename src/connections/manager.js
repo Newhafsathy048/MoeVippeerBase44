@@ -21,6 +21,7 @@ class ConnectionManager {
     this.qr = new Map();
     this.deletedMessages = new Map();
     this.pairingCodes = new Map();
+    this.pairingWaiters = new Map();
   }
 
   list() {
@@ -66,9 +67,25 @@ class ConnectionManager {
     const store = readStore();
     const item = store.connections.find((c) => c.id === id);
     if (!item) return;
-    if (qr) { this.qr.set(id, await QRCode.toDataURL(qr)); item.status = 'pairing'; item.onboarding = { ...(item.onboarding || {}), created: true }; }
+    if (qr) {
+      this.qr.set(id, await QRCode.toDataURL(qr));
+      item.status = 'pairing';
+      item.onboarding = { ...(item.onboarding || {}), created: true };
+      const waiter = this.pairingWaiters.get(id);
+      if (waiter) {
+        this.pairingWaiters.delete(id);
+        clearTimeout(waiter.timer);
+        waiter.resolve();
+      }
+    }
     if (connection === 'open') { item.status = 'connected'; item.onboarding = { ...(item.onboarding || {}), created: true, paired: true }; addLog({ level: 'info', type: 'connection.reconnect_success', connectionId: id, message: `${item.name} session opened` }); item.lastConnectedAt = Date.now(); item.phone = item.phone || this.sockets.get(id)?.user?.id?.split(':')[0]; this.qr.delete(id); this.timers.delete(id); addLog({ level: 'info', type: 'connection.open', connectionId: id, message: `${item.name} connected` }); }
     if (connection === 'close') {
+      const waiter = this.pairingWaiters.get(id);
+      if (waiter) {
+        this.pairingWaiters.delete(id);
+        clearTimeout(waiter.timer);
+        waiter.reject(new Error(lastDisconnect?.error?.message || 'WhatsApp connection closed before pairing completed'));
+      }
       this.sockets.delete(id); item.status = lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut ? 'disconnected' : 'error'; item.lastError = lastDisconnect?.error?.message || 'Connection closed';
       addLog({ level: item.status === 'error' ? 'error' : 'warn', type: 'connection.closed', connectionId: id, message: `${item.name}: ${item.lastError}` });
       if (item.status === 'error') notifyIfEnabled('connectionDrop', { level: 'critical', type: 'connection.drop', connectionId: id, message: `${item.name} needs attention: ${item.lastError}` });
@@ -142,10 +159,21 @@ class ConnectionManager {
     const store = readStore(); const item = store.connections.find((c) => c.id === id); if (!item) throw new Error('Connection not found');
     const digits = String(phone || item.phone || '').replace(/\D/g, ''); if (digits.length < 8 || digits.length > 15) throw new Error('Enter a valid WhatsApp number with country code, digits only');
     let sock = this.sockets.get(id); if (!sock) sock = await this.connect(id); if (!sock || typeof sock.requestPairingCode !== 'function') throw new Error('Pairing code is unavailable until the WhatsApp socket is ready');
+    // Baileys emits `qr` when the socket handshake is ready. Waiting for that
+    // event is required before requestPairingCode; a fixed sleep is unreliable.
+    if (sock.ev?.on && !this.qr.has(id)) {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.pairingWaiters.delete(id);
+          reject(new Error('WhatsApp socket did not become ready for pairing. Generate a new code.'));
+        }, 20000);
+        this.pairingWaiters.set(id, { resolve, reject, timer });
+      });
+    }
     let code;
     let lastError;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (attempt === 0 && sock.ev?.on) await sleep(2500);
+      if (attempt === 0 && sock.ev?.on) await sleep(500);
       try {
         code = await sock.requestPairingCode(digits);
         break;
@@ -169,6 +197,12 @@ class ConnectionManager {
     if (timer) {
       clearTimeout(timer);
       this.timers.delete(id);
+    }
+    const waiter = this.pairingWaiters.get(id);
+    if (waiter) {
+      this.pairingWaiters.delete(id);
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error('Pairing cancelled by user'));
     }
     const sock = this.sockets.get(id);
     if (sock) { try { sock.end(undefined); } catch {} this.sockets.delete(id); }
