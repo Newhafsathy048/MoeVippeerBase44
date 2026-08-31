@@ -14,6 +14,7 @@ function notifyIfEnabled(kind, entry) { const prefs = readStore().notificationPr
 class ConnectionManager {
   constructor() {
     this.sockets = new Map();
+    this.openSockets = new Set();
     this.loadAuthState = (authDir) => useMultiFileAuthState(authDir);
     this.fetchVersion = fetchLatestBaileysVersion;
     this.createSocket = makeWASocket;
@@ -26,7 +27,7 @@ class ConnectionManager {
 
   list() {
     const store = readStore();
-    return store.connections.map((c) => ({ ...redactConnection(c), status: this.sockets.has(c.id) ? 'connected' : c.status || 'disconnected' }));
+    return store.connections.map((c) => ({ ...redactConnection(c), status: c.status || 'disconnected' }));
   }
 
   get(id) { return this.list().find((c) => c.id === id); }
@@ -78,7 +79,7 @@ class ConnectionManager {
         waiter.resolve();
       }
     }
-    if (connection === 'open') { item.status = 'connected'; item.onboarding = { ...(item.onboarding || {}), created: true, paired: true }; addLog({ level: 'info', type: 'connection.reconnect_success', connectionId: id, message: `${item.name} session opened` }); item.lastConnectedAt = Date.now(); item.phone = item.phone || this.sockets.get(id)?.user?.id?.split(':')[0]; this.qr.delete(id); this.timers.delete(id); addLog({ level: 'info', type: 'connection.open', connectionId: id, message: `${item.name} connected` }); }
+    if (connection === 'open') { this.openSockets.add(id); item.status = 'connected'; item.onboarding = { ...(item.onboarding || {}), created: true, paired: true }; addLog({ level: 'info', type: 'connection.reconnect_success', connectionId: id, message: `${item.name} session opened` }); item.lastConnectedAt = Date.now(); item.phone = item.phone || this.sockets.get(id)?.user?.id?.split(':')[0]; this.qr.delete(id); this.timers.delete(id); addLog({ level: 'info', type: 'connection.open', connectionId: id, message: `${item.name} connected` }); }
     if (connection === 'close') {
       const waiter = this.pairingWaiters.get(id);
       if (waiter) {
@@ -86,7 +87,7 @@ class ConnectionManager {
         clearTimeout(waiter.timer);
         waiter.reject(new Error(lastDisconnect?.error?.message || 'WhatsApp connection closed before pairing completed'));
       }
-      this.sockets.delete(id); item.status = lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut ? 'disconnected' : 'error'; item.lastError = lastDisconnect?.error?.message || 'Connection closed';
+      this.sockets.delete(id); this.openSockets.delete(id); item.status = lastDisconnect?.error?.output?.statusCode === DisconnectReason.loggedOut ? 'disconnected' : 'error'; item.lastError = lastDisconnect?.error?.message || 'Connection closed';
       addLog({ level: item.status === 'error' ? 'error' : 'warn', type: 'connection.closed', connectionId: id, message: `${item.name}: ${item.lastError}` });
       if (item.status === 'error') notifyIfEnabled('connectionDrop', { level: 'critical', type: 'connection.drop', connectionId: id, message: `${item.name} needs attention: ${item.lastError}` });
       if (item.status === 'error') this.scheduleReconnect(id);
@@ -122,7 +123,7 @@ class ConnectionManager {
   async handleMessages(id, event) {
     if (event.type !== 'notify') return;
     const sock = this.sockets.get(id); const store = readStore(); const item = store.connections.find((c) => c.id === id);
-    if (!sock || !item) return;
+    if (!sock || !item || !this.openSockets.has(id)) return;
     for (const msg of event.messages || []) {
       const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
       if (msg.key?.remoteJid === 'status@broadcast' && item.autoViewStatus) { try { await sock.readMessages([msg.key]); addLog({ level: 'info', type: 'status.auto_viewed', connectionId: id, message: 'Viewed a status update' }); } catch (error) { addLog({ level: 'error', type: 'status.auto_view_failed', connectionId: id, message: error.message }); } }
@@ -206,6 +207,7 @@ class ConnectionManager {
     }
     const sock = this.sockets.get(id);
     if (sock) { try { sock.end(undefined); } catch {} this.sockets.delete(id); }
+    this.openSockets.delete(id);
     const store = readStore(); const item = store.connections.find((c) => c.id === id); if (item) { item.status = 'disconnected'; item.updatedAt = Date.now(); writeStore(store); addLog({ level: 'info', type: 'connection.disconnected', connectionId: id, message: `${item.name} disconnected by user` }); } }
   qrCode(id) { return this.qr.get(id) || null; }
   logs(limit = 100) { return readStore().logs.slice(0, Math.min(Number(limit) || 100, 500)); }
